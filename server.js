@@ -18,3 +18,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`SmartBuys Optimizer running on port ${PORT}`);
 });
+app.get("/test", (req, res) => res.send("Test route works"));
