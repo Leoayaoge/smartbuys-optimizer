@@ -1,7 +1,10 @@
 const express = require("express");
 const app = express();
-
 app.use(express.json());
+
+// Routes
+const wsPlanRoutes = require("./routes/wsPlanRoutes");
+const oaPlanRoutes = require("./routes/oaPlanRoutes");
 
 // IMPORT WS ROUTES
 const wsPlanRoutes = require("./routes/wsPlanRoutes");
@@ -11,10 +14,6 @@ app.get("/", (req, res) => {
   res.send("SmartBuys Optimizer Backend is running.");
 });
 
-// MOUNT WHOLESALE PLAN ROUTES
-app.use("/", wsPlanRoutes);
-
-// LEGACY TEST ROUTE
 app.post("/allocate", (req, res) => {
   const budget = req.body.budget;
   res.json({
