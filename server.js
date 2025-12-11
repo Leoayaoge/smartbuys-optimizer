@@ -2,7 +2,7 @@ const express = require("express");
 const app = express();
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 // Routes
 const wsPlanRoutes = require("./routes/wsPlanRoutes");
