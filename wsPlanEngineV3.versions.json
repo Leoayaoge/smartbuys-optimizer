@@ -1,0 +1,8 @@
+[
+  {
+    "version": "3.1.0",
+    "date": "2025-12-12",
+    "area": "baseline",
+    "description": "Start explicit semantic versioning for the WS Plan v3 engine. No behaviour change vs prior v3 implementation; this version simply exposes engineVersion in the response and exports ENGINE_VERSION for controllers and tooling."
+  }
+]

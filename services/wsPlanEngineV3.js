@@ -1,10 +1,18 @@
 /**
  * SmartBuys Wholesale Buy Plan Engine v3
  * ======================================
- * 
+ *
  * Unified, modular, deterministic optimization engine
  * Moves all heavy calculation from Apps Script to Node.js backend
- * 
+ *
+ * Versioning
+ * ----------
+ * We track semantic engine versions as 3.x.y so that we can
+ * later answer questions like "why did v3.4 freight logic
+ * work better than v3.6?". Every time we change the core logic
+ * (especially allocation / freight / churn), we should bump
+ * the version and document the change in the version log.
+ *
  * Input:
  * {
  *   budget: number,
@@ -15,15 +23,20 @@
  *   freightConfig: { ratePerKG, ratePerCBM, ... },
  *   churnSettings: { supplierKey: { irstDays, payoutDays } }
  * }
- * 
+ *
  * Output:
  * {
+ *   engineVersion: string, // e.g. "3.1.0"
  *   summary: { totalUnits, totalCostASF, expectedProfit, remainingBudget, monthlyROI },
  *   suppliers: Array<{ supplierKey, supplierName, freight, products: [...] }>
  * }
  */
 
-const { cleanNumber, normalizeSupplierKey } = require('../utils/maths');
+// NOTE: This is the canonical engine version for v3.
+// Start explicit tracking at 3.1.0; bump on logic changes.
+const ENGINE_VERSION = '3.1.0';
+
+const { cleanNumber, normalizeSupplierKey, round } = require('../utils/maths');
 const { getCaseSize, getDimensions, getWeight } = require('../utils/dims');
 const { buildSupplierMap, getSupplierInfo, getSupplierMOQ } = require('../utils/suppliers');
 const { getChurnConfig, getPayoutDays } = require('./churnService');
@@ -127,6 +140,7 @@ async function generateWSPlanV3(input) {
         weightKg: weightKg,
         supplierInfo: supplierInfo,
         churnConfig: churnConfig,
+        codeLink: String(product.codeLink || '').trim(), // Preserve code link for output
       });
     });
     
@@ -203,6 +217,17 @@ async function generateWSPlanV3(input) {
             freightCost: 0,
             currencyFee: 0,
             shippingAndFees: 0,
+            totalWeightKG: 0,
+            totalCBM: 0,
+            totalBoxes: 0,
+            pallets: 0,
+            palletHeight: 0,
+            palletL: 0,
+            palletW: 0,
+            caseL: 0,
+            caseW: 0,
+            caseH: 0,
+            exampleCaseSize: 0,
           },
           products: [],
         };
@@ -218,8 +243,61 @@ async function generateWSPlanV3(input) {
       suppliersOutput[key].products.push(...bundle.products);
     });
     
-    // Convert to array
+    // Convert to array and compute supplier summaries
     const suppliersArray = Object.values(suppliersOutput);
+    
+    // Compute supplier summaries (roi, monthlyROI, etc.)
+    suppliersArray.forEach(function(supplier) {
+      const products = supplier.products || [];
+      if (products.length === 0) {
+        supplier.summary = {
+          costBSF: 0,
+          costASF: 0,
+          expectedProfit: 0,
+          roi: 0,
+          churnWeeks: 0,
+          monthlyROI: 0,
+        };
+        return;
+      }
+      
+      const costBSF = products.reduce(function(sum, p) {
+        return sum + ((p.supplierPrice || 0) * (p.unitsToOrder || 0));
+      }, 0);
+      
+      const costASF = supplier.freight && supplier.freight.shippingAndFees
+        ? costBSF + supplier.freight.shippingAndFees
+        : costBSF;
+      
+      const expectedProfit = products.reduce(function(sum, p) {
+        return sum + (p.totalProfit || 0);
+      }, 0);
+      
+      const roiSupplier = costASF > 0 ? expectedProfit / costASF : 0;
+      
+      // Weighted churn
+      let churnWeeks = 0;
+      if (products.length === 1) {
+        churnWeeks = products[0].churnWeeks || 0;
+      } else if (costBSF > 0) {
+        const churnNumer = products.reduce(function(sum, p) {
+          const costBSF = (p.supplierPrice || 0) * (p.unitsToOrder || 0);
+          return sum + (p.churnWeeks || 0) * costBSF;
+        }, 0);
+        churnWeeks = churnNumer / costBSF;
+      }
+      
+      const monthlyROI = churnWeeks > 0 ? (roiSupplier / churnWeeks) * 4.33 : 0;
+      
+      supplier.summary = {
+        costBSF: round(costBSF, 2),
+        costASF: round(costASF, 2),
+        expectedProfit: round(expectedProfit, 2),
+        roi: round(roiSupplier, 4),
+        churnWeeks: round(churnWeeks, 2),
+        monthlyROI: round(monthlyROI, 4),
+      };
+    });
     
     // Compute summary
     const totalUnits = optimalAllocation.bundles.reduce(function(sum, bundle) {
@@ -228,13 +306,86 @@ async function generateWSPlanV3(input) {
       }, 0);
     }, 0);
     
+    // Compute global ROI and weighted churn from all products
+    let totalCostBSF = 0;
+    let totalChurnNumer = 0;
+    
+    optimalAllocation.bundles.forEach(function(bundle) {
+      bundle.products.forEach(function(product) {
+        const costBSF = (product.supplierPrice || 0) * (product.unitsToOrder || 0);
+        totalCostBSF += costBSF;
+        totalChurnNumer += (product.churnWeeks || 0) * costBSF;
+      });
+    });
+    
+    const weightedChurnWeeks = totalCostBSF > 0 ? totalChurnNumer / totalCostBSF : 0;
+    const roi = optimalAllocation.totalCostASF > 0 
+      ? optimalAllocation.totalProfit / optimalAllocation.totalCostASF 
+      : 0;
+    
+    // Compute supplier summaries
+    suppliersArray.forEach(function(supplier) {
+      const products = supplier.products || [];
+      if (products.length === 0) {
+        supplier.summary = {
+          costBSF: 0,
+          costASF: 0,
+          expectedProfit: 0,
+          roi: 0,
+          churnWeeks: 0,
+          monthlyROI: 0,
+        };
+        return;
+      }
+      
+      const costBSF = products.reduce(function(sum, p) {
+        return sum + ((p.supplierPrice || 0) * (p.unitsToOrder || 0));
+      }, 0);
+      
+      const costASF = supplier.freight && supplier.freight.shippingAndFees
+        ? costBSF + supplier.freight.shippingAndFees
+        : costBSF;
+      
+      const expectedProfit = products.reduce(function(sum, p) {
+        return sum + (p.expectedProfit || 0);
+      }, 0);
+      
+      const roiSupplier = costASF > 0 ? expectedProfit / costASF : 0;
+      
+      // Weighted churn
+      let churnWeeks = 0;
+      if (products.length === 1) {
+        churnWeeks = products[0].churnWeeks || 0;
+      } else if (costBSF > 0) {
+        const churnNumer = products.reduce(function(sum, p) {
+          const costBSF = (p.supplierPrice || 0) * (p.unitsToOrder || 0);
+          return sum + (p.churnWeeks || 0) * costBSF;
+        }, 0);
+        churnWeeks = churnNumer / costBSF;
+      }
+      
+      const monthlyROI = churnWeeks > 0 ? (roiSupplier / churnWeeks) * 4.33 : 0;
+      
+      supplier.summary = {
+        costBSF: round(costBSF, 2),
+        costASF: round(costASF, 2),
+        expectedProfit: round(expectedProfit, 2),
+        roi: round(roiSupplier, 4),
+        churnWeeks: round(churnWeeks, 2),
+        monthlyROI: round(monthlyROI, 4),
+      };
+    });
+    
     return {
+      engineVersion: ENGINE_VERSION,
       summary: {
         totalUnits: totalUnits,
         totalCostASF: optimalAllocation.totalCostASF,
         expectedProfit: optimalAllocation.totalProfit,
         remainingBudget: optimalAllocation.remainingBudget,
-        monthlyROI: optimalAllocation.monthlyROI,
+        roi: round(roi, 4), // Decimal ROI
+        weightedChurnWeeks: round(weightedChurnWeeks, 2),
+        monthlyROI: optimalAllocation.monthlyROI, // Already decimal
       },
       suppliers: suppliersArray,
     };
@@ -246,4 +397,5 @@ async function generateWSPlanV3(input) {
 
 module.exports = {
   generateWSPlanV3,
+  ENGINE_VERSION,
 };

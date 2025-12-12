@@ -304,6 +304,7 @@ function buildSupplierBundles(products, supplierInfo, freightCurves, freightConf
           itemName: item.product.itemName,
           unitsToOrder: item.option.units,
           supplierPrice: item.product.supplierPrice,
+          amazonPrice: item.product.amazonPrice,
           landedCostPerUnit: item.option.landedCostPerUnit,
           profitPerUnit: item.option.profitPerUnit,
           roi: item.option.roi,
@@ -311,6 +312,10 @@ function buildSupplierBundles(products, supplierInfo, freightCurves, freightConf
           churnWeeks: item.option.churnWeeks,
           totalCost: item.option.totalCostASF,
           totalProfit: item.option.totalProfit,
+          // Include original product fields for Apps Script (matching v1 layout)
+          monthlySales: item.product.monthlySales,
+          sellers: item.product.sellerCount,
+          codeLink: item.product.codeLink || '',
         };
       }),
       totalCostASF: bundle.totalCostASF,
